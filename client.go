@@ -804,9 +804,13 @@ func (c *Client) execute(req *Request) (*Response, error) {
 		receivedAt:  time.Now(),
 	}
 
+	if err != nil || req.notParseResponse || c.notParseResponse {
+		return response, err
+	}
+
 	// handle compress replace default RawResponse.Body to new io.ReadCloser
 	ce := ""
-	if !c.disableCompress && resp.Header != nil {
+	if !c.disableCompress {
 		ce = strings.ToLower(resp.Header.Get("Content-Encoding"))
 	}
 	bd := resp.Body
@@ -819,10 +823,6 @@ func (c *Client) execute(req *Request) (*Response, error) {
 		bd, err = brotli.NewReader(resp.Body, nil)
 	}
 	resp.Body = bd
-
-	if err != nil || req.notParseResponse || c.notParseResponse {
-		return response, err
-	}
 
 	if !req.isSaveResponse {
 		defer func() {
