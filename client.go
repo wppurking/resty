@@ -806,7 +806,7 @@ func (c *Client) execute(req *Request) (*Response, error) {
 
 	// handle compress replace default RawResponse.Body to new io.ReadCloser
 	ce := ""
-	if !c.disableCompress {
+	if !c.disableCompress && resp.Header != nil {
 		ce = strings.ToLower(resp.Header.Get("Content-Encoding"))
 	}
 	bd := resp.Body
