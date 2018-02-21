@@ -6,6 +6,8 @@ package resty
 
 import (
 	"bytes"
+	"compress/gzip"
+	"compress/zlib"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -20,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dsnet/compress/brotli"
 )
 
 const (
@@ -92,6 +96,7 @@ type Client struct {
 	scheme             string
 	proxyURL           *url.URL
 	closeConnection    bool
+	disableCompress    bool
 	notParseResponse   bool
 	debugBodySizeLimit int64
 	logPrefix          string
@@ -137,6 +142,14 @@ func (c *Client) SetHostURL(url string) *Client {
 //
 func (c *Client) SetHeader(header, value string) *Client {
 	c.Header.Set(header, value)
+	return c
+}
+
+// SetDisableCompress method sets Compress behave to client instance.
+// Instead of go built in net/http only support Gzip Compress,
+// this Compress Support gzip, deflate, br out of box
+func (c *Client) SetDisableCompress(disable bool) *Client {
+	c.disableCompress = disable
 	return c
 }
 
@@ -800,7 +813,33 @@ func (c *Client) execute(req *Request) (*Response, error) {
 			_ = resp.Body.Close()
 		}()
 
-		if response.body, err = ioutil.ReadAll(resp.Body); err != nil {
+		ce := ""
+		if !c.disableCompress {
+			ce = strings.ToLower(resp.Header.Get("Content-Encoding"))
+		}
+		var bd io.ReadCloser
+		defer func() {
+			if bd != nil {
+				bd.Close()
+			}
+		}()
+		bf := resp.Body
+
+		switch ce {
+		case "gzip":
+			bd, err = gzip.NewReader(bf)
+		case "deflate":
+			bd, err = zlib.NewReader(bf)
+		case "br":
+			bd, err = brotli.NewReader(bf, nil)
+		default:
+			bd = bf
+		}
+		if err != nil {
+			return response, err
+		}
+
+		if response.body, err = ioutil.ReadAll(bd); err != nil {
 			return response, err
 		}
 

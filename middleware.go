@@ -218,6 +218,15 @@ func requestLogger(c *Client, r *Request) error {
 	return nil
 }
 
+func compressHeaders(c *Client, r *Request) error {
+	if c.disableCompress {
+		return nil
+	}
+	// replace exist Accept-Encoding header
+	r.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	return nil
+}
+
 //‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 // Response Middleware(s)
 //___________________________________

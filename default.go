@@ -310,6 +310,7 @@ func createClient(hc *http.Client) *Client {
 		createHTTPRequest,
 		addCredentials,
 		requestLogger,
+		compressHeaders,
 	}
 
 	// user defined request middlewares
