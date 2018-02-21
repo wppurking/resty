@@ -804,6 +804,22 @@ func (c *Client) execute(req *Request) (*Response, error) {
 		receivedAt:  time.Now(),
 	}
 
+	// handle compress replace default RawResponse.Body to new io.ReadCloser
+	ce := ""
+	if !c.disableCompress {
+		ce = strings.ToLower(resp.Header.Get("Content-Encoding"))
+	}
+	bd := resp.Body
+	switch ce {
+	case "gzip":
+		bd, err = gzip.NewReader(resp.Body)
+	case "deflate":
+		bd, err = zlib.NewReader(resp.Body)
+	case "br":
+		bd, err = brotli.NewReader(resp.Body, nil)
+	}
+	resp.Body = bd
+
 	if err != nil || req.notParseResponse || c.notParseResponse {
 		return response, err
 	}
@@ -812,32 +828,6 @@ func (c *Client) execute(req *Request) (*Response, error) {
 		defer func() {
 			_ = resp.Body.Close()
 		}()
-
-		ce := ""
-		if !c.disableCompress {
-			ce = strings.ToLower(resp.Header.Get("Content-Encoding"))
-		}
-		var bd io.ReadCloser
-		defer func() {
-			if bd != nil {
-				bd.Close()
-			}
-		}()
-		bf := resp.Body
-
-		switch ce {
-		case "gzip":
-			bd, err = gzip.NewReader(bf)
-		case "deflate":
-			bd, err = zlib.NewReader(bf)
-		case "br":
-			bd, err = brotli.NewReader(bf, nil)
-		default:
-			bd = bf
-		}
-		if err != nil {
-			return response, err
-		}
 
 		if response.body, err = ioutil.ReadAll(bd); err != nil {
 			return response, err
