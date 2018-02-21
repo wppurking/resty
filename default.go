@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2016 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2018 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
@@ -6,12 +6,13 @@ package resty
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
-	"sync"
 	"time"
 
 	"golang.org/x/net/publicsuffix"
@@ -20,52 +21,27 @@ import (
 // DefaultClient of resty
 var DefaultClient *Client
 
-// New method creates a new go-resty client
+// New method creates a new go-resty client.
 func New() *Client {
 	cookieJar, _ := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+	return createClient(&http.Client{Jar: cookieJar})
+}
 
-	c := &Client{
-		HostURL:    "",
-		QueryParam: url.Values{},
-		FormData:   url.Values{},
-		Header:     http.Header{},
-		UserInfo:   nil,
-		Token:      "",
-		Cookies:    make([]*http.Cookie, 0),
-		Debug:      false,
-		Log:        getLogger(os.Stderr),
-		httpClient: &http.Client{Jar: cookieJar},
-		transport:  &http.Transport{},
-		mutex:      &sync.Mutex{},
-	}
-
-	// Default redirect policy
-	c.SetRedirectPolicy(NoRedirectPolicy())
-
-	// default before request middlewares
-	c.beforeRequest = []func(*Client, *Request) error{
-		parseRequestURL,
-		parseRequestHeader,
-		parseRequestBody,
-		createHTTPRequest,
-		addCredentials,
-		requestLogger,
-	}
-
-	// default after response middlewares
-	c.afterResponse = []func(*Client, *Response) error{
-		responseLogger,
-		parseResponseBody,
-		saveResponseIntoFile,
-	}
-
-	return c
+// NewWithClient method create a new go-resty client with given `http.Client`.
+func NewWithClient(hc *http.Client) *Client {
+	return createClient(hc)
 }
 
 // R creates a new resty request object, it is used form a HTTP/RESTful request
 // such as GET, POST, PUT, DELETE, HEAD, PATCH and OPTIONS.
 func R() *Request {
 	return DefaultClient.R()
+}
+
+// NewRequest is an alias for R(). Creates a new resty request object, it is used form a HTTP/RESTful request
+// such as GET, POST, PUT, DELETE, HEAD, PATCH and OPTIONS.
+func NewRequest() *Request {
+	return R()
 }
 
 // SetHostURL sets Host URL. See `Client.SetHostURL for more information.
@@ -83,6 +59,11 @@ func SetHeaders(headers map[string]string) *Client {
 	return DefaultClient.SetHeaders(headers)
 }
 
+// SetCookieJar sets custom http.CookieJar. See `Client.SetCookieJar` for more information.
+func SetCookieJar(jar http.CookieJar) *Client {
+	return DefaultClient.SetCookieJar(jar)
+}
+
 // SetCookie sets single cookie object. See `Client.SetCookie` for more information.
 func SetCookie(hc *http.Cookie) *Client {
 	return DefaultClient.SetCookie(hc)
@@ -93,12 +74,12 @@ func SetCookies(cs []*http.Cookie) *Client {
 	return DefaultClient.SetCookies(cs)
 }
 
-// SetQueryParam method sets single paramater and its value. See `Client.SetQueryParam` for more information.
+// SetQueryParam method sets single parameter and its value. See `Client.SetQueryParam` for more information.
 func SetQueryParam(param, value string) *Client {
 	return DefaultClient.SetQueryParam(param, value)
 }
 
-// SetQueryParams method sets multiple paramaters and its value. See `Client.SetQueryParams` for more information.
+// SetQueryParams method sets multiple parameters and its value. See `Client.SetQueryParams` for more information.
 func SetQueryParams(params map[string]string) *Client {
 	return DefaultClient.SetQueryParams(params)
 }
@@ -128,9 +109,44 @@ func OnAfterResponse(m func(*Client, *Response) error) *Client {
 	return DefaultClient.OnAfterResponse(m)
 }
 
+// SetPreRequestHook method sets the pre-request hook. See `Client.SetPreRequestHook` for more information.
+func SetPreRequestHook(h func(*Client, *Request) error) *Client {
+	return DefaultClient.SetPreRequestHook(h)
+}
+
 // SetDebug method enables the debug mode. See `Client.SetDebug` for more information.
 func SetDebug(d bool) *Client {
 	return DefaultClient.SetDebug(d)
+}
+
+// SetDebugBodyLimit method sets the response body limit for debug mode. See `Client.SetDebugBodyLimit` for more information.
+func SetDebugBodyLimit(sl int64) *Client {
+	return DefaultClient.SetDebugBodyLimit(sl)
+}
+
+// SetAllowGetMethodPayload method allows the GET method with payload. See `Client.SetAllowGetMethodPayload` for more information.
+func SetAllowGetMethodPayload(a bool) *Client {
+	return DefaultClient.SetAllowGetMethodPayload(a)
+}
+
+// SetRetryCount method sets the retry count. See `Client.SetRetryCount` for more information.
+func SetRetryCount(count int) *Client {
+	return DefaultClient.SetRetryCount(count)
+}
+
+// SetRetryWaitTime method sets the retry wait time. See `Client.SetRetryWaitTime` for more information.
+func SetRetryWaitTime(waitTime time.Duration) *Client {
+	return DefaultClient.SetRetryWaitTime(waitTime)
+}
+
+// SetRetryMaxWaitTime method sets the retry max wait time. See `Client.SetRetryMaxWaitTime` for more information.
+func SetRetryMaxWaitTime(maxWaitTime time.Duration) *Client {
+	return DefaultClient.SetRetryMaxWaitTime(maxWaitTime)
+}
+
+// AddRetryCondition method appends check function for retry. See `Client.AddRetryCondition` for more information.
+func AddRetryCondition(condition RetryConditionFunc) *Client {
+	return DefaultClient.AddRetryCondition(condition)
 }
 
 // SetDisableWarn method disables warning comes from `go-resty` client. See `Client.SetDisableWarn` for more information.
@@ -210,9 +226,10 @@ func SetOutputDirectory(dirPath string) *Client {
 	return DefaultClient.SetOutputDirectory(dirPath)
 }
 
-// SetTransport method sets custom *http.Transport in the resty client.
+// SetTransport method sets custom `*http.Transport` or any `http.RoundTripper`
+// compatible interface implementation in the resty client.
 // See `Client.SetTransport` for more information.
-func SetTransport(transport *http.Transport) *Client {
+func SetTransport(transport http.RoundTripper) *Client {
 	return DefaultClient.SetTransport(transport)
 }
 
@@ -220,6 +237,92 @@ func SetTransport(transport *http.Transport) *Client {
 // See `Client.SetScheme` for more information.
 func SetScheme(scheme string) *Client {
 	return DefaultClient.SetScheme(scheme)
+}
+
+// SetCloseConnection method sets close connection value in the resty client.
+// See `Client.SetCloseConnection` for more information.
+func SetCloseConnection(close bool) *Client {
+	return DefaultClient.SetCloseConnection(close)
+}
+
+// SetDoNotParseResponse method instructs `Resty` not to parse the response body automatically.
+// See `Client.SetDoNotParseResponse` for more information.
+func SetDoNotParseResponse(parse bool) *Client {
+	return DefaultClient.SetDoNotParseResponse(parse)
+}
+
+// SetPathParams method sets the Request path parameter key-value pairs. See
+// `Client.SetPathParams` for more information.
+func SetPathParams(params map[string]string) *Client {
+	return DefaultClient.SetPathParams(params)
+}
+
+// IsProxySet method returns the true if proxy is set on client otherwise false.
+// See `Client.IsProxySet` for more information.
+func IsProxySet() bool {
+	return DefaultClient.IsProxySet()
+}
+
+// GetClient method returns the current `http.Client` used by the default resty client.
+func GetClient() *http.Client {
+	return DefaultClient.httpClient
+}
+
+//‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+// Unexported methods
+//___________________________________
+
+func createClient(hc *http.Client) *Client {
+	c := &Client{
+		HostURL:            "",
+		QueryParam:         url.Values{},
+		FormData:           url.Values{},
+		Header:             http.Header{},
+		UserInfo:           nil,
+		Token:              "",
+		Cookies:            make([]*http.Cookie, 0),
+		Debug:              false,
+		Log:                getLogger(os.Stderr),
+		RetryCount:         0,
+		RetryWaitTime:      defaultWaitTime,
+		RetryMaxWaitTime:   defaultMaxWaitTime,
+		JSONMarshal:        json.Marshal,
+		JSONUnmarshal:      json.Unmarshal,
+		httpClient:         hc,
+		debugBodySizeLimit: math.MaxInt32,
+		pathParams:         make(map[string]string),
+	}
+
+	// Log Prefix
+	c.SetLogPrefix("RESTY ")
+
+	// Default transport
+	c.SetTransport(&http.Transport{})
+
+	// Default redirect policy
+	c.SetRedirectPolicy(NoRedirectPolicy())
+
+	// default before request middlewares
+	c.beforeRequest = []func(*Client, *Request) error{
+		parseRequestURL,
+		parseRequestHeader,
+		parseRequestBody,
+		createHTTPRequest,
+		addCredentials,
+		requestLogger,
+	}
+
+	// user defined request middlewares
+	c.udBeforeRequest = []func(*Client, *Request) error{}
+
+	// default after response middlewares
+	c.afterResponse = []func(*Client, *Response) error{
+		responseLogger,
+		parseResponseBody,
+		saveResponseIntoFile,
+	}
+
+	return c
 }
 
 func init() {

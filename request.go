@@ -1,51 +1,25 @@
-// Copyright (c) 2015-2016 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
+// Copyright (c) 2015-2018 Jeevanandam M (jeeva@myjeeva.com), All rights reserved.
 // resty source code and usage is governed by a MIT style
 // license that can be found in the LICENSE file.
 
 package resty
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
-	"net/http"
+	"net"
 	"net/url"
 	"reflect"
 	"strings"
-	"time"
 )
 
-// Request type is used to compose and send individual request from client
-// go-resty is provide option override client level settings such as
-//		Auth Token, Basic Auth credentials, Header, Query Param, Form Data, Error object
-// and also you can add more options for that particular request
-//
-type Request struct {
-	URL        string
-	Method     string
-	QueryParam url.Values
-	FormData   url.Values
-	Header     http.Header
-	UserInfo   *User
-	Token      string
-	Body       interface{}
-	Result     interface{}
-	Error      interface{}
-	Time       time.Time
-	RawRequest *http.Request
-
-	client           *Client
-	bodyBuf          *bytes.Buffer
-	isMultiPart      bool
-	isFormData       bool
-	setContentLength bool
-	isSaveResponse   bool
-	outputFile       string
-	proxyURL         *url.URL
-	multipartFiles   []*File
+// SRVRecord holds the data to query the SRV record for the following service
+type SRVRecord struct {
+	Service string
+	Domain  string
 }
 
 // SetHeader method is to set a single header field and its value in the current request.
@@ -73,13 +47,13 @@ func (r *Request) SetHeader(header, value string) *Request {
 //
 func (r *Request) SetHeaders(headers map[string]string) *Request {
 	for h, v := range headers {
-		r.Header.Set(h, v)
+		r.SetHeader(h, v)
 	}
 
 	return r
 }
 
-// SetQueryParam method sets single paramater and its value in the current request.
+// SetQueryParam method sets single parameter and its value in the current request.
 // It will be formed as query string for the request.
 // Example: `search=kitchen%20papers&size=large` in the URL after `?` mark.
 // 		resty.R().
@@ -88,11 +62,11 @@ func (r *Request) SetHeaders(headers map[string]string) *Request {
 // Also you can override query params value, which was set at client instance level
 //
 func (r *Request) SetQueryParam(param, value string) *Request {
-	r.QueryParam.Add(param, value)
+	r.QueryParam.Set(param, value)
 	return r
 }
 
-// SetQueryParams method sets multiple paramaters and its values at one go in the current request.
+// SetQueryParams method sets multiple parameters and its values at one go in the current request.
 // It will be formed as query string for the request.
 // Example: `search=kitchen%20papers&size=large` in the URL after `?` mark.
 // 		resty.R().
@@ -104,13 +78,13 @@ func (r *Request) SetQueryParam(param, value string) *Request {
 //
 func (r *Request) SetQueryParams(params map[string]string) *Request {
 	for p, v := range params {
-		r.QueryParam.Add(p, v)
+		r.SetQueryParam(p, v)
 	}
 
 	return r
 }
 
-// SetMultiValueQueryParams method sets multiple paramaters with multi-value
+// SetMultiValueQueryParams method appends multiple parameters with multi-value
 // at one go in the current request. It will be formed as query string for the request.
 // Example: `status=pending&status=approved&status=open` in the URL after `?` mark.
 // 		resty.R().
@@ -136,10 +110,12 @@ func (r *Request) SetMultiValueQueryParams(params url.Values) *Request {
 //			SetQueryString("productId=232&template=fresh-sample&cat=resty&source=google&kw=buy a lot more")
 //
 func (r *Request) SetQueryString(query string) *Request {
-	values, err := url.ParseQuery(strings.TrimSpace(query))
+	params, err := url.ParseQuery(strings.TrimSpace(query))
 	if err == nil {
-		for k := range values {
-			r.QueryParam.Add(k, values.Get(k))
+		for p, v := range params {
+			for _, pv := range v {
+				r.QueryParam.Add(p, pv)
+			}
 		}
 	} else {
 		r.client.Log.Printf("ERROR [%v]", err)
@@ -147,8 +123,8 @@ func (r *Request) SetQueryString(query string) *Request {
 	return r
 }
 
-// SetFormData method sets Form parameters and its values in the current request.
-// It's applicable only HTTP method `POST` and `PUT` and requets content type would be set as
+// SetFormData method sets Form parameters and their values in the current request.
+// It's applicable only HTTP method `POST` and `PUT` and requests content type would be set as
 // `application/x-www-form-urlencoded`.
 // 		resty.R().
 // 			SetFormData(map[string]string{
@@ -159,7 +135,25 @@ func (r *Request) SetQueryString(query string) *Request {
 //
 func (r *Request) SetFormData(data map[string]string) *Request {
 	for k, v := range data {
-		r.FormData.Add(k, v)
+		r.FormData.Set(k, v)
+	}
+
+	return r
+}
+
+// SetMultiValueFormData method appends multiple form parameters with multi-value
+// at one go in the current request.
+// 		resty.R().
+//			SetMultiValueFormData(url.Values{
+//				"search_criteria": []string{"book", "glass", "pencil"},
+//			})
+// Also you can override form data value, which was set at client instance level
+//
+func (r *Request) SetMultiValueFormData(params url.Values) *Request {
+	for k, v := range params {
+		for _, kv := range v {
+			r.FormData.Add(k, kv)
+		}
 	}
 
 	return r
@@ -327,7 +321,7 @@ func (r *Request) SetAuthToken(token string) *Request {
 }
 
 // SetOutput method sets the output file for current HTTP request. Current HTTP response will be
-// saved into given file. It is similar to `curl -o` flag. Absoulte path or relative path can be used.
+// saved into given file. It is similar to `curl -o` flag. Absolute path or relative path can be used.
 // If is it relative path then output file goes under the output directory, as mentioned
 // in the `Client.SetOutputDirectory`.
 // 		resty.R().
@@ -341,61 +335,90 @@ func (r *Request) SetOutput(file string) *Request {
 	return r
 }
 
-// SetProxy method sets the Proxy URL for current Request. It does not affect client level
-// proxy settings. Request level proxy settings takes higher priority, even though client
-// level proxy settings exists.
+// SetSRV method sets the details to query the service SRV record and execute the
+// request.
 // 		resty.R().
-//			SetProxy("http://proxyserver:8888").
-//			Get("http://httpbin.org/get")
-//
-func (r *Request) SetProxy(proxyURL string) *Request {
-	if pURL, err := url.Parse(proxyURL); err == nil {
-		r.proxyURL = pURL
-	} else {
-		r.client.Log.Printf("ERROR [%v]", err)
-		r.proxyURL = nil
-	}
-
+//			SetSRV(SRVRecord{"web", "testservice.com"}).
+//			Get("/get")
+func (r *Request) SetSRV(srv *SRVRecord) *Request {
+	r.SRV = srv
 	return r
 }
 
+// SetDoNotParseResponse method instructs `Resty` not to parse the response body automatically.
+// Resty exposes the raw response body as `io.ReadCloser`. Also do not forget to close the body,
+// otherwise you might get into connection leaks, no connection reuse.
 //
+// Please Note: Response middlewares are not applicable, if you use this option. Basically you have
+// taken over the control of response parsing from `Resty`.
+func (r *Request) SetDoNotParseResponse(parse bool) *Request {
+	r.notParseResponse = parse
+	return r
+}
+
+// SetPathParams method sets multiple URL path key-value pairs at one go in the
+// resty current request instance.
+// 		resty.R().SetPathParams(map[string]string{
+// 		   "userId": "sample@sample.com",
+// 		   "subAccountId": "100002",
+// 		})
+//
+// 		Result:
+// 		   URL - /v1/users/{userId}/{subAccountId}/details
+// 		   Composed URL - /v1/users/sample@sample.com/100002/details
+// It replace the value of the key while composing request URL. Also you can
+// override Path Params value, which was set at client instance level.
+func (r *Request) SetPathParams(params map[string]string) *Request {
+	for p, v := range params {
+		r.pathParams[p] = v
+	}
+	return r
+}
+
+// ExpectContentType method allows to provide fallback `Content-Type` for automatic unmarshalling
+// when `Content-Type` response header is unavailable.
+func (r *Request) ExpectContentType(contentType string) *Request {
+	r.fallbackContentType = contentType
+	return r
+}
+
+//‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 // HTTP verb method starts here
-//
+//___________________________________
 
 // Get method does GET HTTP request. It's defined in section 4.3.1 of RFC7231.
 func (r *Request) Get(url string) (*Response, error) {
-	return r.Execute(GET, url)
+	return r.Execute(MethodGet, url)
 }
 
 // Head method does HEAD HTTP request. It's defined in section 4.3.2 of RFC7231.
 func (r *Request) Head(url string) (*Response, error) {
-	return r.Execute(HEAD, url)
+	return r.Execute(MethodHead, url)
 }
 
 // Post method does POST HTTP request. It's defined in section 4.3.3 of RFC7231.
 func (r *Request) Post(url string) (*Response, error) {
-	return r.Execute(POST, url)
+	return r.Execute(MethodPost, url)
 }
 
 // Put method does PUT HTTP request. It's defined in section 4.3.4 of RFC7231.
 func (r *Request) Put(url string) (*Response, error) {
-	return r.Execute(PUT, url)
+	return r.Execute(MethodPut, url)
 }
 
 // Delete method does DELETE HTTP request. It's defined in section 4.3.5 of RFC7231.
 func (r *Request) Delete(url string) (*Response, error) {
-	return r.Execute(DELETE, url)
+	return r.Execute(MethodDelete, url)
 }
 
 // Options method does OPTIONS HTTP request. It's defined in section 4.3.7 of RFC7231.
 func (r *Request) Options(url string) (*Response, error) {
-	return r.Execute(OPTIONS, url)
+	return r.Execute(MethodOptions, url)
 }
 
 // Patch method does PATCH HTTP request. It's defined in section 2 of RFC5789.
 func (r *Request) Patch(url string) (*Response, error) {
-	return r.Execute(PATCH, url)
+	return r.Execute(MethodPatch, url)
 }
 
 // Execute method performs the HTTP request with given HTTP method and URL
@@ -403,19 +426,63 @@ func (r *Request) Patch(url string) (*Response, error) {
 // 		resp, err := resty.R().Execute(resty.GET, "http://httpbin.org/get")
 //
 func (r *Request) Execute(method, url string) (*Response, error) {
-	if r.isMultiPart && !(method == POST || method == PUT) {
-		return nil, fmt.Errorf("Multipart content is not allowed in HTTP verb [%v]", method)
+	var addrs []*net.SRV
+	var err error
+
+	if r.isMultiPart && !(method == MethodPost || method == MethodPut) {
+		return nil, fmt.Errorf("multipart content is not allowed in HTTP verb [%v]", method)
+	}
+
+	if r.SRV != nil {
+		_, addrs, err = net.LookupSRV(r.SRV.Service, "tcp", r.SRV.Domain)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	r.Method = method
-	r.URL = url
+	r.URL = r.selectAddr(addrs, url, 0)
 
-	return r.client.execute(r)
+	if r.client.RetryCount == 0 {
+		return r.client.execute(r)
+	}
+
+	var resp *Response
+	attempt := 0
+	_ = Backoff(
+		func() (*Response, error) {
+			attempt++
+
+			r.URL = r.selectAddr(addrs, url, attempt)
+
+			resp, err = r.client.execute(r)
+			if err != nil {
+				r.client.Log.Printf("ERROR [%v] Attempt [%v]", err, attempt)
+				if r.isContextCancelledIfAvailable() {
+					// stop Backoff from retrying request if request has been
+					// canceled by context
+					return resp, nil
+				}
+			}
+
+			return resp, err
+		},
+		Retries(r.client.RetryCount),
+		WaitTime(r.client.RetryWaitTime),
+		MaxWaitTime(r.client.RetryMaxWaitTime),
+		RetryConditions(r.client.RetryConditions),
+	)
+
+	return resp, err
 }
+
+//‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+// Request Unexported methods
+//___________________________________
 
 func (r *Request) fmtBodyString() (body string) {
 	body = "***** NO CONTENT *****"
-	if isPayloadSupported(r.Method) {
+	if isPayloadSupported(r.Method, r.client.AllowGetMethodPayload) {
 		// multipart or form-data
 		if r.isMultiPart || r.isFormData {
 			body = string(r.bodyBuf.Bytes())
@@ -423,37 +490,50 @@ func (r *Request) fmtBodyString() (body string) {
 		}
 
 		// request body data
-		if r.Body != nil {
-			var prtBodyBytes []byte
-			var err error
+		if r.Body == nil {
+			return
+		}
+		var prtBodyBytes []byte
+		var err error
 
-			contentType := r.Header.Get(hdrContentTypeKey)
-			kind := kindOf(r.Body)
-			if IsJSONType(contentType) && (kind == reflect.Struct || kind == reflect.Map) {
-				prtBodyBytes, err = json.MarshalIndent(&r.Body, "", "   ")
-			} else if IsXMLType(contentType) && (kind == reflect.Struct) {
-				prtBodyBytes, err = xml.MarshalIndent(&r.Body, "", "   ")
-			} else if b, ok := r.Body.(string); ok {
-				if IsJSONType(contentType) {
-					bodyBytes := []byte(b)
-					var out bytes.Buffer
-					if err = json.Indent(&out, bodyBytes, "", "   "); err == nil {
-						prtBodyBytes = out.Bytes()
-					}
-				} else {
-					body = b
-					return
+		contentType := r.Header.Get(hdrContentTypeKey)
+		kind := kindOf(r.Body)
+		if canJSONMarshal(contentType, kind) {
+			prtBodyBytes, err = json.MarshalIndent(&r.Body, "", "   ")
+		} else if IsXMLType(contentType) && (kind == reflect.Struct) {
+			prtBodyBytes, err = xml.MarshalIndent(&r.Body, "", "   ")
+		} else if b, ok := r.Body.(string); ok {
+			if IsJSONType(contentType) {
+				bodyBytes := []byte(b)
+				out := acquireBuffer()
+				defer releaseBuffer(out)
+				if err = json.Indent(out, bodyBytes, "", "   "); err == nil {
+					prtBodyBytes = out.Bytes()
 				}
-			} else if b, ok := r.Body.([]byte); ok {
-				body = base64.StdEncoding.EncodeToString(b)
+			} else {
+				body = b
+				return
 			}
-
-			if prtBodyBytes != nil {
-				body = string(prtBodyBytes)
-			}
+		} else if b, ok := r.Body.([]byte); ok {
+			body = base64.StdEncoding.EncodeToString(b)
 		}
 
+		if prtBodyBytes != nil && err == nil {
+			body = string(prtBodyBytes)
+		}
 	}
 
 	return
+}
+
+func (r *Request) selectAddr(addrs []*net.SRV, path string, attempt int) string {
+	if addrs == nil {
+		return path
+	}
+
+	idx := attempt % len(addrs)
+	domain := strings.TrimRight(addrs[idx].Target, ".")
+	path = strings.TrimLeft(path, "/")
+
+	return fmt.Sprintf("%s://%s:%d/%s", r.client.scheme, domain, addrs[idx].Port, path)
 }
