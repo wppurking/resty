@@ -115,7 +115,12 @@ func handleLoginEndpoint(t *testing.T, w http.ResponseWriter, r *http.Request) {
 		if IsJSONType(r.Header.Get(hdrContentTypeKey)) {
 			jd := json.NewDecoder(r.Body)
 			err := jd.Decode(user)
-			w.Header().Set(hdrContentTypeKey, jsonContentType)
+			if r.URL.Query().Get("ct") == "problem" {
+				w.Header().Set(hdrContentTypeKey, "application/problem+json; charset=utf-8")
+			} else {
+				w.Header().Set(hdrContentTypeKey, jsonContentType)
+			}
+
 			if err != nil {
 				t.Logf("Error: %#v", err)
 				w.WriteHeader(http.StatusBadRequest)
@@ -128,7 +133,6 @@ func handleLoginEndpoint(t *testing.T, w http.ResponseWriter, r *http.Request) {
 			} else if user.Username == "testuser" && user.Password == "invalidjson" {
 				_, _ = w.Write([]byte(`{ "id": "success", "message": "login successful", }`))
 			} else {
-				w.Header().Set("Www-Authenticate", "Protected Realm")
 				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = w.Write([]byte(`{ "id": "unauthorized", "message": "Invalid credentials" }`))
 			}
@@ -319,6 +323,43 @@ func createFormPostServer(t *testing.T) *httptest.Server {
 
 				return
 			}
+		}
+	})
+
+	return ts
+}
+
+func createFilePostServer(t *testing.T) *httptest.Server {
+	ts := createTestServer(func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("Method: %v", r.Method)
+		t.Logf("Path: %v", r.URL.Path)
+		t.Logf("Content-Type: %v", r.Header.Get(hdrContentTypeKey))
+
+		if r.Method != MethodPost {
+			t.Log("createPostServer:: Not a Post request")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, http.StatusText(http.StatusBadRequest))
+			return
+		}
+
+		targetPath := filepath.Join(getTestDataPath(), "upload-large")
+		_ = os.MkdirAll(targetPath, 0700)
+		defer cleanupFiles(targetPath)
+
+		switch r.URL.Path {
+		case "/upload":
+			f, err := os.OpenFile(filepath.Join(targetPath, "large-file.png"),
+				os.O_WRONLY|os.O_CREATE, 0666)
+			if err != nil {
+				t.Logf("Error: %v", err)
+				return
+			}
+			defer func() {
+				_ = f.Close()
+			}()
+			size, _ := io.Copy(f, r.Body)
+
+			fmt.Fprintf(w, "File Uploaded successfully, file size: %v", size)
 		}
 	})
 
@@ -550,6 +591,10 @@ func cleanupFiles(files ...string) {
 	pwd, _ := os.Getwd()
 
 	for _, f := range files {
-		_ = os.RemoveAll(filepath.Join(pwd, f))
+		if filepath.IsAbs(f) {
+			_ = os.RemoveAll(f)
+		} else {
+			_ = os.RemoveAll(filepath.Join(pwd, f))
+		}
 	}
 }
